@@ -7,6 +7,7 @@ const form = document.querySelector("form");
 
 const API_URL = "https://api.restcountries.com/countries/v5";
 const API_KEY = "rc_live_d0d540360de7417aba9b019be18282db";
+const FALLBACK_API_V3 = "https://restcountries.com/v3.1";
 
 const WEATHER_API_KEY = "TU_API_KEY_OPENWEATHER";
 const WEATHER_API_URL = "https://api.openweathermap.org/data/2.5/weather";
@@ -227,6 +228,58 @@ const renderCountryList = (filteredCountries) => {
   container.appendChild(grid);
 };
 
+const fetchCountriesWithFallback = async (query, signal) => {
+  const normalized = query.toLowerCase();
+  const aliasMap = {
+    "estados unidos": "united states",
+    "eeuu": "united states",
+    "ee.uu.": "united states",
+    "usa": "united states",
+  };
+  const mappedQuery = aliasMap[normalized] || query;
+
+  // 1. Intento principal con v5
+  try {
+    const resV5 = await fetch(`${API_URL}?q=${encodeURIComponent(query)}`, {
+      headers: { Authorization: `Bearer ${API_KEY}` },
+      signal,
+    });
+    if (resV5.ok) {
+      const dataV5 = await resV5.json();
+      const listV5 = extractCountriesArray(dataV5);
+      if (listV5.length > 0) return listV5;
+    } else {
+      console.warn("Respuesta HTTP no exitosa en v5:", resV5.status);
+    }
+  } catch (err) {
+    if (err.name === "AbortError") throw err;
+    console.warn("Fallo en v5, usando respaldo v3.1:", err);
+  }
+
+  // 2. Respaldo por nombre en restcountries v3.1
+  const resName = await fetch(
+    `${FALLBACK_API_V3}/name/${encodeURIComponent(mappedQuery)}`,
+    { signal }
+  );
+  if (resName.ok) {
+    const dataName = await resName.json();
+    const listName = extractCountriesArray(dataName);
+    if (listName.length > 0) return listName;
+  }
+
+  // 3. Respaldo por traducción (útil para nombres en español)
+  const resTrans = await fetch(
+    `${FALLBACK_API_V3}/translation/${encodeURIComponent(query)}`,
+    { signal }
+  );
+  if (resTrans.ok) {
+    const dataTrans = await resTrans.json();
+    return extractCountriesArray(dataTrans);
+  }
+
+  return [];
+};
+
 const performSearch = async (query) => {
   if (currentController) {
     currentController.abort();
@@ -239,26 +292,12 @@ const performSearch = async (query) => {
   container.innerHTML = "";
 
   try {
-    const response = await fetch(
-      `${API_URL}?q=${encodeURIComponent(query)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${API_KEY}`,
-        },
-        signal: currentController.signal,
-      }
+    const filteredCountries = await fetchCountriesWithFallback(
+      query,
+      currentController.signal
     );
 
     loader.classList.remove("active");
-
-    if (!response.ok) {
-      console.warn("Respuesta HTTP no exitosa:", response.status);
-      container.innerHTML = `<p class="message-text">No se encontraron paises con ese nombre</p>`;
-      return;
-    }
-
-    const data = await response.json();
-    const filteredCountries = extractCountriesArray(data);
 
     if (filteredCountries.length === 0) {
       container.innerHTML = `<p class="message-text">No se encontraron paises con ese nombre</p>`;
@@ -273,7 +312,9 @@ const performSearch = async (query) => {
           c.codes?.alpha_3 === "USA" ||
           c.codes?.alpha_2 === "US" ||
           c.codes?.alpha3 === "USA" ||
-          c.codes?.alpha2 === "US"
+          c.codes?.alpha2 === "US" ||
+          c.cca3 === "USA" ||
+          c.cca2 === "US"
       );
       if (exactUS) {
         await renderSingleCountry(exactUS);
